@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import List
 import uuid
 from datetime import datetime, timezone
+from google.cloud.firestore import SERVER_TIMESTAMP
 
 from google.cloud import firestore
 
@@ -58,3 +59,63 @@ def get_order(order_id: str):
             data[k] = v.isoformat()
 
     return data
+
+@app.post("/orders/{order_id}/authorize")
+def authorize_order(order_id: str):
+    order_ref = db.collection("orders").document(order_id)
+    snap = order_ref.get()
+
+    if not snap.exists:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    order = snap.to_dict()
+
+    if order.get("status") != "CREATED":
+        raise HTTPException(status_code=400, detail="Order not in CREATED state")
+
+    # Update order status
+    order_ref.update({
+        "status": "AUTHORIZED",
+        "updated_at": SERVER_TIMESTAMP,
+    })
+
+    machine_id = order["machine_id"]
+
+    # Create vend command for the machine
+    cmd_ref = (
+        db.collection("machines")
+          .document(machine_id)
+          .collection("commands")
+          .document()
+    )
+
+    cmd_ref.set({
+        "type": "VEND_ORDER",
+        "order_id": order_id,
+        "items": order["items"],
+        "status": "PENDING",
+        "created_at": SERVER_TIMESTAMP,
+    })
+
+    return {"status": "AUTHORIZED", "order_id": order_id}
+
+
+@app.get("/machines/{machine_id}/commands/next")
+def get_next_command(machine_id: str):
+    cmds = (
+        db.collection("machines")
+          .document(machine_id)
+          .collection("commands")
+          .where("status", "==", "PENDING")
+          .order_by("created_at")
+          .limit(1)
+          .stream()
+    )
+
+    for cmd in cmds:
+        cmd.reference.update({"status": "CLAIMED"})
+        data = cmd.to_dict()
+        data["command_id"] = cmd.id
+        return data
+
+    return {"status": "NO_COMMAND"}
