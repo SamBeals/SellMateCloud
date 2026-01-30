@@ -99,7 +99,6 @@ def authorize_order(order_id: str):
 
     return {"status": "AUTHORIZED", "order_id": order_id}
 
-
 @app.get("/machines/{machine_id}/commands/next")
 def get_next_command(machine_id: str):
     cmds = (
@@ -107,7 +106,6 @@ def get_next_command(machine_id: str):
           .document(machine_id)
           .collection("commands")
           .where("status", "==", "PENDING")
-          .order_by("created_at")
           .limit(1)
           .stream()
     )
@@ -119,3 +117,4 @@ def get_next_command(machine_id: str):
         return data
 
     return {"status": "NO_COMMAND"}
+
