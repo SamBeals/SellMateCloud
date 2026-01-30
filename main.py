@@ -105,20 +105,21 @@ def authorize_order(order_id: str):
 
 @app.get("/machines/{machine_id}/commands/next")
 def get_next_command(machine_id: str):
-    cmds = (
+    col = (
         db.collection("machines")
           .document(machine_id)
           .collection("commands")
-          .where("status", "==", "PENDING")
-          .limit(1)
-          .stream()
     )
 
-    for cmd in cmds:
-        cmd.reference.update({"status": "CLAIMED"})
-        data = cmd.to_dict()
-        data["command_id"] = cmd.id
-        return data
+    snaps = list(col.limit(20).stream())
+
+    for snap in snaps:
+        data = snap.to_dict() or {}
+        if data.get("status") == "PENDING":
+            snap.reference.update({"status": "CLAIMED"})
+            data["command_id"] = snap.id
+            return data
 
     return {"status": "NO_COMMAND"}
+
 
