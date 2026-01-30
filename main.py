@@ -68,10 +68,11 @@ def authorize_order(order_id: str):
     if not snap.exists:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    order = snap.to_dict()
+    order = snap.to_dict() or {}
 
-    if order.get("status") != "CREATED":
-        raise HTTPException(status_code=400, detail="Order not in CREATED state")
+    # Allow idempotent re-calls
+    if order.get("status") not in ["CREATED", "AUTHORIZED"]:
+        raise HTTPException(status_code=400, detail=f"Order not authorizable from status {order.get('status')}")
 
     # Update order status
     order_ref.update({
@@ -79,9 +80,11 @@ def authorize_order(order_id: str):
         "updated_at": SERVER_TIMESTAMP,
     })
 
-    machine_id = order["machine_id"]
+    machine_id = order.get("machine_id")
+    if not machine_id:
+        raise HTTPException(status_code=400, detail="Order missing machine_id")
 
-    # Create vend command for the machine
+    # Create a vend command
     cmd_ref = (
         db.collection("machines")
           .document(machine_id)
@@ -92,12 +95,13 @@ def authorize_order(order_id: str):
     cmd_ref.set({
         "type": "VEND_ORDER",
         "order_id": order_id,
-        "items": order["items"],
+        "machine_id": machine_id,
+        "items": order.get("items", []),
         "status": "PENDING",
         "created_at": SERVER_TIMESTAMP,
     })
 
-    return {"status": "AUTHORIZED", "order_id": order_id}
+    return {"status": "AUTHORIZED", "order_id": order_id, "command_id": cmd_ref.id}
 
 @app.get("/machines/{machine_id}/commands/next")
 def get_next_command(machine_id: str):
