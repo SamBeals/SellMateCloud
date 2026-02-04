@@ -8,11 +8,16 @@ from fastapi import Header
 import os
 import stripe
 from google.cloud import firestore
+import os
+import stripe
+from fastapi import Request
+
 
 
 app = FastAPI()
 db = firestore.Client()
 
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 @app.post("/orders/{order_id}/start_payment")
 def start_payment(order_id: str):
@@ -59,6 +64,68 @@ def start_payment(order_id: str):
 
 
     return {"order_id": order_id, "status": "PAYMENT_STARTED", "payment_intent_id": pi["id"]}
+
+import os
+import stripe
+from fastapi import Request
+
+stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+
+@app.post("/stripe/webhook")
+async def stripe_webhook(request: Request):
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload=payload,
+            sig_header=sig_header,
+            secret=STRIPE_WEBHOOK_SECRET,
+        )
+    except stripe.error.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid payload")
+
+    # ---- Handle events you care about ----
+    if event["type"] == "payment_intent.succeeded":
+        intent = event["data"]["object"]
+
+        order_id = intent["metadata"].get("order_id")
+        machine_id = intent["metadata"].get("machine_id")
+
+        if order_id and machine_id:
+            # Update order -> PAID
+            order_ref = db.collection("orders").document(order_id)
+            snap = order_ref.get()
+            if snap.exists:
+                order = snap.to_dict() or {}
+                if order.get("status") == "PAYMENT_STARTED":
+                    order_ref.update({
+                        "status": "PAID",
+                        "updated_at": SERVER_TIMESTAMP,
+                    })
+
+                    # Create vend command (same logic as /authorize)
+                    cmd_ref = (
+                        db.collection("machines")
+                          .document(machine_id)
+                          .collection("commands")
+                          .document()
+                    )
+
+                    cmd_ref.set({
+                        "type": "VEND_ORDER",
+                        "order_id": order_id,
+                        "machine_id": machine_id,
+                        "items": order.get("items", []),
+                        "status": "PENDING",
+                        "created_at": SERVER_TIMESTAMP,
+                    })
+
+    return {"received": True}
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
