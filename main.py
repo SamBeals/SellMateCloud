@@ -14,15 +14,14 @@ app = FastAPI()
 db = firestore.Client()
 
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
-
 @app.post("/orders/{order_id}/start_payment")
 def start_payment(order_id: str):
     order_ref = db.collection("orders").document(order_id)
-    snap = order_ref.get()
-    if not snap.exists:
+    order_snap = order_ref.get()
+    if not order_snap.exists:
         raise HTTPException(status_code=404, detail="Order not found")
+    order = order_snap.to_dict() or {}
 
-    order = snap.to_dict() or {}
     if order.get("status") not in ["CREATED", "PAYMENT_STARTED"]:
         raise HTTPException(status_code=400, detail=f"Order not payable from status {order.get('status')}")
 
@@ -30,36 +29,34 @@ def start_payment(order_id: str):
     machine_snap = db.collection("machines").document(machine_id).get()
     if not machine_snap.exists:
         raise HTTPException(status_code=400, detail="Machine not found")
-
     machine = machine_snap.to_dict() or {}
+
     reader_id = machine.get("stripe_reader_id")
     if not reader_id:
         raise HTTPException(status_code=400, detail="Machine missing stripe_reader_id")
 
-    # 1) Create PaymentIntent (server-driven Terminal flow)
+    # Create PI (card_present)
     pi = stripe.PaymentIntent.create(
         amount=int(order["amount_cents"]),
         currency="usd",
         payment_method_types=["card_present"],
-        capture_method="automatic",
-        metadata={
-            "order_id": order_id,
-            "machine_id": machine_id,
-        },
-    )  # docs: PaymentIntent.create :contentReference[oaicite:2]{index=2}
+        metadata={"order_id": order_id, "machine_id": machine_id},
+    )
 
-    # 2) Tell the reader to process this PaymentIntent
+    # Tell reader to take payment
     stripe.terminal.Reader.process_payment_intent(
         reader_id,
         payment_intent=pi["id"],
-    )  # docs: readers.process_payment_intent :contentReference[oaicite:3]{index=3}
+    )
 
-    # Update order status
     order_ref.update({
         "status": "PAYMENT_STARTED",
         "stripe_payment_intent_id": pi["id"],
         "updated_at": SERVER_TIMESTAMP,
     })
+
+    return {"order_id": order_id, "status": "PAYMENT_STARTED", "payment_intent_id": pi["id"]}
+
 
     return {"order_id": order_id, "status": "PAYMENT_STARTED", "payment_intent_id": pi["id"]}
 @app.get("/health")
