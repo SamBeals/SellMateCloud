@@ -8,17 +8,15 @@ from fastapi import Header
 import os
 import stripe
 from google.cloud import firestore
-import os
-import stripe
 from fastapi import Request
-
-
 
 app = FastAPI()
 db = firestore.Client()
 
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+
+
 @app.post("/orders/{order_id}/start_payment")
 def start_payment(order_id: str):
     order_ref = db.collection("orders").document(order_id)
@@ -63,14 +61,14 @@ def start_payment(order_id: str):
     return {"order_id": order_id, "status": "PAYMENT_STARTED", "payment_intent_id": pi["id"]}
 
 
-    return {"order_id": order_id, "status": "PAYMENT_STARTED", "payment_intent_id": pi["id"]}
-
+# (left as-is, but keep only one of these blocks long-term)
 import os
 import stripe
 from fastapi import Request
 
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+
 
 @app.post("/stripe/webhook")
 async def stripe_webhook(request: Request):
@@ -101,7 +99,9 @@ async def stripe_webhook(request: Request):
             snap = order_ref.get()
             if snap.exists:
                 order = snap.to_dict() or {}
-                if order.get("status") == "PAYMENT_STARTED":
+
+                # ---- FIX #1: accept CREATED OR PAYMENT_STARTED to avoid race ----
+                if order.get("status") in ["CREATED", "PAYMENT_STARTED"]:
                     order_ref.update({
                         "status": "PAID",
                         "updated_at": SERVER_TIMESTAMP,
@@ -126,18 +126,22 @@ async def stripe_webhook(request: Request):
 
     return {"received": True}
 
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
 
 class OrderItem(BaseModel):
     slot_id: str
     qty: int
 
+
 class CreateOrderRequest(BaseModel):
     machine_id: str
     items: List[OrderItem]
     amount_cents: int
+
 
 @app.post("/orders")
 def create_order(req: CreateOrderRequest):
@@ -162,6 +166,7 @@ def create_order(req: CreateOrderRequest):
         "updated_at": now.isoformat(),
     }
 
+
 @app.get("/orders/{order_id}")
 def get_order(order_id: str):
     snap = db.collection("orders").document(order_id).get()
@@ -175,6 +180,7 @@ def get_order(order_id: str):
             data[k] = v.isoformat()
 
     return data
+
 
 @app.post("/orders/{order_id}/authorize")
 def authorize_order(order_id: str):
@@ -219,6 +225,7 @@ def authorize_order(order_id: str):
 
     return {"status": "AUTHORIZED", "order_id": order_id, "command_id": cmd_ref.id}
 
+
 @app.get("/machines/{machine_id}/commands/next")
 def get_next_command(machine_id: str):
     col = (
@@ -237,5 +244,3 @@ def get_next_command(machine_id: str):
             return data
 
     return {"status": "NO_COMMAND"}
-
-
